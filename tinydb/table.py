@@ -407,6 +407,105 @@ class Table:
 
         raise RuntimeError('You have to pass either cond or doc_id')
 
+    def _perform_update_on_doc(
+        self,
+        table: Dict[int, Mapping],
+        doc_id: int,
+        fields: Union[Mapping, Callable[[Mapping], None]]
+    ) -> None:
+        """
+        Perform update on a single document.
+
+        If fields is callable, it's invoked with the document to modify it.
+        Otherwise, fields is treated as a mapping and used to update the document.
+        """
+        if callable(fields):
+            # Update documents by calling the update function provided by the user
+            fields(table[doc_id])
+        else:
+            # Update documents by setting all fields from the provided data
+            table[doc_id].update(fields)
+
+    def _update_docs_by_ids(
+        self,
+        doc_ids: Iterable[int],
+        fields: Union[Mapping, Callable[[Mapping], None]]
+    ) -> List[int]:
+        """
+        Update documents specified by a list of document IDs.
+
+        The update is performed atomically within a single _update_table call,
+        which ensures the changes are persisted to storage and the cache is cleared.
+        """
+        updated_ids = list(doc_ids)
+
+        def updater(table: dict):
+            for doc_id in updated_ids:
+                self._perform_update_on_doc(table, doc_id, fields)
+
+        # Perform the update operation (see _update_table for details)
+        self._update_table(updater)
+
+        return updated_ids
+
+    def _update_docs_by_cond(
+        self,
+        cond: QueryLike,
+        fields: Union[Mapping, Callable[[Mapping], None]]
+    ) -> List[int]:
+        """
+        Update documents matching a query condition.
+
+        Iterates through all documents to find matches, collects their IDs,
+        and applies the update. The whole operation is atomic within _update_table.
+        """
+        updated_ids = []
+
+        def updater(table: dict):
+            # We need to convert the keys iterator to a list because
+            # we may remove entries from the ``table`` dict during
+            # iteration and doing this without the list conversion would
+            # result in an exception (RuntimeError: dictionary changed size
+            # during iteration)
+            for doc_id in list(table.keys()):
+                if cond(table[doc_id]):
+                    # Add ID to list of updated documents
+                    updated_ids.append(doc_id)
+
+                    # Perform the update
+                    self._perform_update_on_doc(table, doc_id, fields)
+
+        # Perform the update operation (see _update_table for details)
+        self._update_table(updater)
+
+        return updated_ids
+
+    def _update_all_docs(
+        self,
+        fields: Union[Mapping, Callable[[Mapping], None]]
+    ) -> List[int]:
+        """
+        Update all documents in the table unconditionally.
+
+        Iterates through all documents and applies the update.
+        The whole operation is atomic within _update_table.
+        """
+        updated_ids = []
+
+        def updater(table: dict):
+            # Process all documents
+            for doc_id in list(table.keys()):
+                # Add ID to list of updated documents
+                updated_ids.append(doc_id)
+
+                # Perform the update
+                self._perform_update_on_doc(table, doc_id, fields)
+
+        # Perform the update operation (see _update_table for details)
+        self._update_table(updater)
+
+        return updated_ids
+
     def update(
         self,
         fields: Union[Mapping, Callable[[Mapping], None]],
@@ -422,81 +521,18 @@ class Table:
         :param doc_ids: a list of document IDs
         :returns: a list containing the updated document's ID
         """
-
-        # Define the function that will perform the update
-        if callable(fields):
-            def perform_update(table, doc_id):
-                # Update documents by calling the update function provided by
-                # the user
-                fields(table[doc_id])
-        else:
-            def perform_update(table, doc_id):
-                # Update documents by setting all fields from the provided data
-                table[doc_id].update(fields)
-
         if doc_ids is not None:
             # Perform the update operation for documents specified by a list
             # of document IDs
-
-            updated_ids = list(doc_ids)
-
-            def updater(table: dict):
-                # Call the processing callback with all document IDs
-                for doc_id in updated_ids:
-                    perform_update(table, doc_id)
-
-            # Perform the update operation (see _update_table for details)
-            self._update_table(updater)
-
-            return updated_ids
+            return self._update_docs_by_ids(doc_ids, fields)
 
         elif cond is not None:
             # Perform the update operation for documents specified by a query
-
-            # Collect affected doc_ids
-            updated_ids = []
-
-            def updater(table: dict):
-                _cond = cast(QueryLike, cond)
-
-                # We need to convert the keys iterator to a list because
-                # we may remove entries from the ``table`` dict during
-                # iteration and doing this without the list conversion would
-                # result in an exception (RuntimeError: dictionary changed size
-                # during iteration)
-                for doc_id in list(table.keys()):
-                    # Pass through all documents to find documents matching the
-                    # query. Call the processing callback with the document ID
-                    if _cond(table[doc_id]):
-                        # Add ID to list of updated documents
-                        updated_ids.append(doc_id)
-
-                        # Perform the update (see above)
-                        perform_update(table, doc_id)
-
-            # Perform the update operation (see _update_table for details)
-            self._update_table(updater)
-
-            return updated_ids
+            return self._update_docs_by_cond(cast(QueryLike, cond), fields)
 
         else:
             # Update all documents unconditionally
-
-            updated_ids = []
-
-            def updater(table: dict):
-                # Process all documents
-                for doc_id in list(table.keys()):
-                    # Add ID to list of updated documents
-                    updated_ids.append(doc_id)
-
-                    # Perform the update (see above)
-                    perform_update(table, doc_id)
-
-            # Perform the update operation (see _update_table for details)
-            self._update_table(updater)
-
-            return updated_ids
+            return self._update_all_docs(fields)
 
     def update_multiple(
         self,
@@ -509,20 +545,6 @@ class Table:
 
         :returns: a list containing the updated document's ID
         """
-
-        # Define the function that will perform the update
-        def perform_update(fields, table, doc_id):
-            if callable(fields):
-                # Update documents by calling the update function provided
-                # by the user
-                fields(table[doc_id])
-            else:
-                # Update documents by setting all fields from the provided
-                # data
-                table[doc_id].update(fields)
-
-        # Perform the update operation for documents specified by a query
-
         # Collect affected doc_ids
         updated_ids = []
 
@@ -543,7 +565,7 @@ class Table:
                         updated_ids.append(doc_id)
 
                         # Perform the update (see above)
-                        perform_update(fields, table, doc_id)
+                        self._perform_update_on_doc(table, doc_id, fields)
 
         # Perform the update operation (see _update_table for details)
         self._update_table(updater)
@@ -591,6 +613,62 @@ class Table:
         # data as a new document
         return [self.insert(document)]
 
+    def _remove_docs_by_ids(self, doc_ids: Iterable[int]) -> List[int]:
+        """
+        Remove documents specified by a list of document IDs.
+
+        The removal is performed atomically within a single _update_table call,
+        which ensures the changes are persisted to storage and the cache is cleared.
+        """
+        # This function returns the list of IDs for the documents that have
+        # been removed. When removing documents identified by a set of
+        # document IDs, it's this list of document IDs we need to return
+        # later.
+        # We convert the document ID iterator into a list, so we can both
+        # use the document IDs to remove the specified documents and
+        # to return the list of affected document IDs
+        removed_ids = list(doc_ids)
+
+        def updater(table: dict):
+            for doc_id in removed_ids:
+                table.pop(doc_id)
+
+        # Perform the remove operation
+        self._update_table(updater)
+
+        return removed_ids
+
+    def _remove_docs_by_cond(self, cond: QueryLike) -> List[int]:
+        """
+        Remove documents matching a query condition.
+
+        Iterates through all documents to find matches, collects their IDs,
+        and removes them. The whole operation is atomic within _update_table.
+        """
+        removed_ids = []
+
+        # This updater function will be called with the table data
+        # as its first argument. See ``Table._update`` for details on this
+        # operation
+        def updater(table: dict):
+            # We need to convert the keys iterator to a list because
+            # we may remove entries from the ``table`` dict during
+            # iteration and doing this without the list conversion would
+            # result in an exception (RuntimeError: dictionary changed size
+            # during iteration)
+            for doc_id in list(table.keys()):
+                if cond(table[doc_id]):
+                    # Add document ID to list of removed document IDs
+                    removed_ids.append(doc_id)
+
+                    # Remove document from the table
+                    table.pop(doc_id)
+
+        # Perform the remove operation
+        self._update_table(updater)
+
+        return removed_ids
+
     def remove(
         self,
         cond: Optional[QueryLike] = None,
@@ -604,53 +682,10 @@ class Table:
         :returns: a list containing the removed documents' ID
         """
         if doc_ids is not None:
-            # This function returns the list of IDs for the documents that have
-            # been removed. When removing documents identified by a set of
-            # document IDs, it's this list of document IDs we need to return
-            # later.
-            # We convert the document ID iterator into a list, so we can both
-            # use the document IDs to remove the specified documents and
-            # to return the list of affected document IDs
-            removed_ids = list(doc_ids)
-
-            def updater(table: dict):
-                for doc_id in removed_ids:
-                    table.pop(doc_id)
-
-            # Perform the remove operation
-            self._update_table(updater)
-
-            return removed_ids
+            return self._remove_docs_by_ids(doc_ids)
 
         if cond is not None:
-            removed_ids = []
-
-            # This updater function will be called with the table data
-            # as its first argument. See ``Table._update`` for details on this
-            # operation
-            def updater(table: dict):
-                # We need to convince MyPy (the static type checker) that
-                # the ``cond is not None`` invariant still holds true when
-                # the updater function is called
-                _cond = cast(QueryLike, cond)
-
-                # We need to convert the keys iterator to a list because
-                # we may remove entries from the ``table`` dict during
-                # iteration and doing this without the list conversion would
-                # result in an exception (RuntimeError: dictionary changed size
-                # during iteration)
-                for doc_id in list(table.keys()):
-                    if _cond(table[doc_id]):
-                        # Add document ID to list of removed document IDs
-                        removed_ids.append(doc_id)
-
-                        # Remove document from the table
-                        table.pop(doc_id)
-
-            # Perform the remove operation
-            self._update_table(updater)
-
-            return removed_ids
+            return self._remove_docs_by_cond(cast(QueryLike, cond))
 
         raise RuntimeError('Use truncate() to remove all documents')
 
