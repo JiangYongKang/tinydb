@@ -60,6 +60,9 @@ def test_query_cache(db):
     query1 = where('int') == 1
 
     assert db.count(query1) == 3
+    assert query1 not in db._query_cache
+
+    db.search(query1)
     assert query1 in db._query_cache
 
     assert db.count(query1) == 3
@@ -68,6 +71,9 @@ def test_query_cache(db):
     query2 = where('int') == 0
 
     assert db.count(query2) == 0
+    assert query2 not in db._query_cache
+
+    db.search(query2)
     assert query2 in db._query_cache
 
     assert db.count(query2) == 0
@@ -116,6 +122,10 @@ def test_query_cache_size(db):
 
     assert table.count(query) == 2
     assert table.count(where('int') == 2) == 0
+    assert len(table._query_cache) == 0
+
+    table.search(query)
+    table.search(where('int') == 2)
     assert len(table._query_cache) == 1
 
 
@@ -177,3 +187,110 @@ def test_persist_table(db):
 
     db.table("nonpersisted", persist_empty=False)
     assert "nonpersisted" not in db.tables()
+
+
+def test_count_equals_search_len(db):
+    db.drop_tables()
+    db.insert_multiple({'int': i, 'char': c} for i, c in enumerate('abcde'))
+
+    query = where('int') > 1
+    assert db.count(query) == len(db.search(query))
+
+    query_no_match = where('int') > 100
+    assert db.count(query_no_match) == len(db.search(query_no_match)) == 0
+
+    query_all = where('int').exists()
+    assert db.count(query_all) == len(db.search(query_all)) == 5
+
+
+def test_count_uses_cache(db):
+    db.drop_tables()
+    db.insert_multiple({'int': i} for i in range(10))
+
+    query = where('int') > 5
+
+    assert query not in db._query_cache
+
+    db.search(query)
+    assert query in db._query_cache
+    cached_results = db._query_cache.get(query)
+    assert cached_results is not None
+    expected_count = len(cached_results)
+
+    assert db.count(query) == expected_count
+
+    db._read_table = lambda: {}
+    assert db.count(query) == expected_count
+
+
+def test_count_does_not_populate_cache(db):
+    db.drop_tables()
+    db.insert_multiple({'int': i} for i in range(10))
+
+    query = where('int') > 5
+
+    assert query not in db._query_cache
+
+    db.count(query)
+    assert query not in db._query_cache
+
+    db.search(query)
+    assert query in db._query_cache
+
+
+def test_count_empty_table(db):
+    db.drop_tables()
+
+    assert db.count(where('int') == 1) == 0
+    assert db.count(where('int').exists()) == 0
+
+
+def test_count_after_write_invalidates_cache(db):
+    db.drop_tables()
+    db.insert({'int': 1})
+    db.insert({'int': 2})
+
+    query = where('int') == 1
+
+    db.search(query)
+    assert query in db._query_cache
+    assert db.count(query) == 1
+
+    db.insert({'int': 1})
+
+    assert query not in db._query_cache
+    assert db.count(query) == 2
+
+
+def test_count_does_not_construct_documents():
+    from tinydb import TinyDB, where
+    from tinydb.storages import MemoryStorage
+    from tinydb.table import Document, Table
+
+    class TrackingDocument(Document):
+        creation_count = 0
+
+        def __init__(self, value, doc_id):
+            TrackingDocument.creation_count += 1
+            super().__init__(value, doc_id)
+
+    class TrackingTable(Table):
+        document_class = TrackingDocument
+
+    db = TinyDB(storage=MemoryStorage)
+    db.table_class = TrackingTable
+
+    table = db.table('test')
+    doc_count = 100
+    table.insert_multiple({'value': i} for i in range(doc_count))
+
+    TrackingDocument.creation_count = 0
+
+    count_result = table.count(where('value') >= 0)
+    assert count_result == doc_count
+    assert TrackingDocument.creation_count == 0
+
+    search_result = table.search(where('value') >= 0)
+    assert len(search_result) == doc_count
+    assert TrackingDocument.creation_count == doc_count
+    assert all(isinstance(d, TrackingDocument) for d in search_result)

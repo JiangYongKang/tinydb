@@ -669,10 +669,26 @@ class Table:
         """
         Count the documents matching a query.
 
-        :param cond: the condition use
-        """
+        This method is optimized for counting: it does not construct
+        Document objects for matching documents, which makes it more
+        memory-efficient than ``len(table.search(cond))`` on large tables.
 
-        return len(self.search(cond))
+        If the query result is already in the query cache, the count
+        will be retrieved from the cache. Otherwise, the table will be
+        scanned without constructing Document objects.
+
+        :param cond: the condition to check against
+        :returns: the number of documents matching the query
+        """
+        cached_results = self._query_cache.get(cond)
+        if cached_results is not None:
+            return len(cached_results)
+
+        count = 0
+        for doc in self._read_table().values():
+            if cond(doc):
+                count += 1
+        return count
 
     def clear_cache(self) -> None:
         """
