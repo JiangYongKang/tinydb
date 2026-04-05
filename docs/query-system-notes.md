@@ -438,8 +438,11 @@ cond = Query().price.map(lambda x: x * 1.1) > 100
 # 每次创建的 lambda 都是不同对象
 cond1 = Query().price.map(lambda x: x * 1.1) > 100
 cond2 = Query().price.map(lambda x: x * 1.1) > 100
-# cond1.__eq__(cond2) 返回 False（lambda 对象不同，_hash 均为 None）
-# 即使缓存也无法命中，不如不缓存
+# 注意：
+# - cond1._hash = None, cond2._hash = None
+# - cond1.__eq__(cond2) 比较 None == None，返回 True
+# - 但 is_cacheable() 都返回 False，所以根本不会进入缓存
+# 原因：函数对象无法稳定哈希，标记为不可缓存避免错误命中
 ```
 
 **其他不可缓存场景**：
