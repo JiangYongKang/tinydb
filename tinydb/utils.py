@@ -36,6 +36,9 @@ def with_typehint(baseclass: Type[T]):
     return object
 
 
+_MISSING = object()
+
+
 class LRUCache(abc.MutableMapping, Generic[K, V]):
     """
     A least-recently used (LRU) cache with a fixed cache size.
@@ -78,8 +81,8 @@ class LRUCache(abc.MutableMapping, Generic[K, V]):
         del self.cache[key]
 
     def __getitem__(self, key) -> V:
-        value = self.get(key)
-        if value is None:
+        value = self.get(key, _MISSING)
+        if value is _MISSING:
             raise KeyError(key)
 
         return value
@@ -88,9 +91,9 @@ class LRUCache(abc.MutableMapping, Generic[K, V]):
         return iter(self.cache)
 
     def get(self, key: K, default: Optional[D] = None) -> Optional[Union[V, D]]:
-        value = self.cache.get(key)
+        value = self.cache.get(key, _MISSING)
 
-        if value is not None:
+        if value is not _MISSING:
             self.cache.move_to_end(key, last=True)
 
             return value

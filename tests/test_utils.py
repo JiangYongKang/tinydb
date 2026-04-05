@@ -122,6 +122,55 @@ def test_lru_cache_falsy_values_bug():
     assert "b" not in cache
     assert cache["a"] == 3
 
+
+def test_lru_cache_none_value():
+    """
+    Test that LRU cache correctly handles None as a valid cached value.
+    
+    Bug: Using `value is None` to check for cache misses incorrectly treated
+    None values as misses, causing:
+    1. `__getitem__` raising KeyError when value is None
+    2. `get` not updating LRU order when accessing a None value
+    """
+    cache = LRUCache(capacity=3)
+    
+    # Store None as a valid value
+    cache["a"] = None
+    cache["b"] = 1
+    cache["c"] = 2
+    
+    # Check initial LRU order before any access
+    assert cache.lru == ["a", "b", "c"]
+    
+    # Test __getitem__ with None value - should not raise KeyError
+    assert cache["a"] is None
+    
+    # Test get with None value - should return None, not default
+    assert cache.get("a") is None
+    assert cache.get("a", default="default") is None
+    
+    # Test that accessing None value updates LRU order
+    # After accessing "a" via __getitem__ and get, "a" should be at the end
+    assert cache.lru == ["b", "c", "a"]
+    
+    # Access "b" - should move to end
+    cache.get("b")
+    assert cache.lru == ["c", "a", "b"]
+    
+    # Test that non-existent key still returns default
+    assert cache.get("nonexistent") is None
+    assert cache.get("nonexistent", default="default") == "default"
+    
+    # Test that non-existent key raises KeyError in __getitem__
+    with pytest.raises(KeyError):
+        _ = cache["nonexistent"]
+    
+    # Test eviction with None values
+    cache["d"] = 3  # Should evict "c" (oldest)
+    assert cache.lru == ["a", "b", "d"]
+    assert "c" not in cache
+    assert cache["a"] is None  # None value still accessible
+
 def test_freeze():
     frozen = freeze([0, 1, 2, {'a': [1, 2, 3]}, {1, 2}])
     assert isinstance(frozen, tuple)
